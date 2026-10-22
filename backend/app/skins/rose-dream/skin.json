@@ -1,0 +1,11 @@
+{
+  "name": "暖粉梦境",
+  "cover": "cover.jpg",
+  "mode": "light",
+  "accent": "#c86b93",
+  "blur": 20,
+  "panel_opacity": 0.62,
+  "mask": 0.12,
+  "wallpaper_blur": 0,
+  "reader_shade": 0.1
+}

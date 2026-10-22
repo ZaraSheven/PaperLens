@@ -1,0 +1,11 @@
+{
+  "name": "素纸",
+  "cover": "cover.jpg",
+  "mode": "light",
+  "accent": "#3f5d7d",
+  "blur": 16,
+  "panel_opacity": 0.78,
+  "mask": 0.05,
+  "wallpaper_blur": 0,
+  "reader_shade": 0.06
+}

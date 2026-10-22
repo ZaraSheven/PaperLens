@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PaperLens</title>
+    <script>
+      // 首屏先把上次的皮肤和明暗打上：等 React 挂载再改，会先闪一下默认配色。
+      // 皮肤参数由 src/skins.ts 算好后缓存在这个 key 里。
+      try {
+        var cached = JSON.parse(localStorage.getItem('paper-lens.appearance') || 'null')
+        var root = document.documentElement
+        if (cached && cached.theme) {
+          root.dataset.theme = cached.theme
+          if (cached.skin && cached.skin !== 'plain') root.dataset.skin = cached.skin
+          if (cached.glass) root.dataset.skinGlass = 'on'
+          if (cached.vars) {
+            for (var name in cached.vars) root.style.setProperty(name, cached.vars[name])
+          }
+        } else {
+          // 没缓存过也要先定下明暗，别让第一帧用错字色。
+          root.dataset.theme = window.matchMedia('(prefers-color-scheme: dark)').matches
+            ? 'dark'
+            : 'light'
+        }
+      } catch (error) {
+        // 本地存的东西坏了或读不到，按浅色画第一帧，随后会被接口返回的设置覆盖。
+        document.documentElement.dataset.theme = 'light'
+      }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

@@ -1,0 +1,11 @@
+{
+  "name": "石墨",
+  "cover": "cover.jpg",
+  "mode": "dark",
+  "accent": "#7f9bb5",
+  "blur": 16,
+  "panel_opacity": 0.62,
+  "mask": 0.15,
+  "wallpaper_blur": 0,
+  "reader_shade": 0.35
+}

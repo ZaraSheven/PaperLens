@@ -1,0 +1,10 @@
+fastapi>=0.111
+uvicorn[standard]>=0.30
+pymupdf>=1.24
+pdfplumber==0.11.4
+wordninja==2.0.0
+python-dotenv>=1.0
+openai>=1.40
+python-multipart>=0.0.9
+pydantic-settings>=2.3
+

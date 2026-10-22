@@ -1,0 +1,11 @@
+{
+  "name": "苔原绿",
+  "cover": "cover.jpg",
+  "mode": "light",
+  "accent": "#4a7c59",
+  "blur": 18,
+  "panel_opacity": 0.7,
+  "mask": 0.1,
+  "wallpaper_blur": 0,
+  "reader_shade": 0.08
+}

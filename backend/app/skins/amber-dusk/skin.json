@@ -1,0 +1,11 @@
+{
+  "name": "琥珀黄昏",
+  "cover": "cover.jpg",
+  "mode": "dark",
+  "accent": "#d9903f",
+  "blur": 22,
+  "panel_opacity": 0.55,
+  "mask": 0.22,
+  "wallpaper_blur": 0,
+  "reader_shade": 0.45
+}
