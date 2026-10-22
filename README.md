@@ -13,7 +13,7 @@
 
 </div>
 
-![阅读界面](docs/screenshots/reader.png)
+<img src="docs/screenshots/reader.png" alt="阅读界面" width="820">
 
 ## 这是什么
 
@@ -26,33 +26,36 @@ PaperLens 把论文按段落切块，让每个段落都成为一个可以长期�
 
 ## 效果预览
 
-| 文献库：待读 / 已读两栏 | 论文详情：梗概、方法、疑问 |
+文献库分「待读 / 已读」两栏，分类当文件夹用；已读的单击看详情，双击继续读原文。
+
+| 文献库 | 论文详情 |
 |---|---|
-| ![文献库](docs/screenshots/library.png) | ![论文详情](docs/screenshots/document-details.png) |
+| <img src="docs/screenshots/library.png" alt="文献库" width="460"> | <img src="docs/screenshots/document-details.png" alt="论文详情" width="460"> |
 
-| 公式原图气泡 | 表格原图气泡 |
-|---|---|
-| ![公式气泡](docs/screenshots/formula-bubble.png) | ![表格气泡](docs/screenshots/table-bubble.png) |
+### 问答效果
 
-连续多选，可复制原文或批量翻译：
+问到公式时，气泡里先把那一块的原图摆出来，再回答：
 
-![连续多选](docs/screenshots/multi-select.png)
+<img src="docs/screenshots/formula-bubble.png" alt="公式问答" width="820">
 
-### 换肤效果
+问到表格时，表头和数字一起显示，助手直接按表格讲指标：
+
+<img src="docs/screenshots/table-bubble.png" alt="表格问答" width="820">
+
+问到插图时，原图连同问题一起交给看图模型：
+
+<img src="docs/screenshots/figure-bubble.png" alt="插图问答" width="820">
+
+### 换肤与设置
 
 一套皮肤 = 一张壁纸 + 一组玻璃参数。工具栏、卡片、气泡、弹窗变成半透明玻璃浮在图上，
-PDF 仍然是白纸、正文照样清楚。下面从左到右、从上到下分别是墨蓝夜航、暖粉梦境、
-紫罗兰夜、琥珀黄昏，最后一张是换肤抽屉。
+PDF 仍然是白纸、正文照样清楚。可以上传自己的图，明暗和主色从图里算，也能单独换主色。
 
-| 墨蓝夜航 | 暖粉梦境 |
-|---|---|
-| ![墨蓝夜航](docs/screenshots/skin-ink-night.png) | ![暖粉梦境](docs/screenshots/skin-rose-dream.png) |
+<img src="docs/screenshots/skin-drawer.png" alt="换肤抽屉" width="820">
 
-| 紫罗兰夜 | 琥珀黄昏 |
-|---|---|
-| ![紫罗兰夜](docs/screenshots/skin-violet-night.png) | ![琥珀黄昏](docs/screenshots/skin-amber-dusk.png) |
+模型设置页：除了两组模型接口，还能写 `agent.md`（助手身份与回答风格）和笔记模板。
 
-![换肤抽屉](docs/screenshots/skin-drawer.png)
+<img src="docs/screenshots/agent-setup.png" alt="模型设置" width="820">
 
 ## 功能
 
