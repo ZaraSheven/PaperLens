@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { api } from '../api'
 import type { Message, Question } from '../types'
@@ -23,6 +23,9 @@ export function DocPanel({ docId, initialTab, onJump, onClose, onError }: Props)
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [saved, setSaved] = useState(false)
+  /** 正在流式回答：问题先显示，答案一段段补上来。 */
+  const [pending, setPending] = useState<{ question: string; answer: string } | null>(null)
+  const messagesRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -55,21 +58,44 @@ export function DocPanel({ docId, initialTab, onJump, onClose, onError }: Props)
     }
   }, [docId])
 
-  const ask = async () => {
+  const ask = () => {
     const content = draft.trim()
     if (!content || busy) return
+    setDraft('')
     setBusy(true)
-    try {
-      // 全文面板没有段落锚点，检索范围固定是整篇。
-      await api.askDocument(docId, content, 'full')
-      setDraft('')
-      setMessages(await api.documentMessages(docId))
-    } catch (reason) {
-      onError(errorMessage(reason))
-    } finally {
-      setBusy(false)
-    }
+    setPending({ question: content, answer: '' })
+    api
+      .askDocumentStream(docId, content, {
+        onDelta: (text) =>
+          setPending((current) =>
+            current ? { ...current, answer: current.answer + text } : current,
+          ),
+        onError: (message) => {
+          setPending(null)
+          onError(message)
+        },
+      })
+      .catch((reason: unknown) => {
+        setPending(null)
+        onError(errorMessage(reason))
+      })
+      .finally(async () => {
+        try {
+          setMessages(await api.documentMessages(docId))
+        } catch (reason) {
+          onError(errorMessage(reason))
+        } finally {
+          setPending(null)
+          setBusy(false)
+        }
+      })
   }
+
+  // 回答一边长一边滚到底，不然只看到开头。
+  useEffect(() => {
+    const element = messagesRef.current
+    if (element) element.scrollTop = element.scrollHeight
+  }, [messages.length, pending?.answer, pending?.question])
 
   const save = async () => {
     try {
@@ -131,14 +157,28 @@ export function DocPanel({ docId, initialTab, onJump, onClose, onError }: Props)
 
       {tab === 'chat' && (
         <>
-          <div className="messages">
+          <div className="messages" ref={messagesRef}>
             {messages.length === 0 && <p className="empty">针对整篇文献提问</p>}
             {messages.map((message) => (
               <div key={message.id} className={`message role-${message.role}`}>
                 <MessageBody content={message.content} />
               </div>
             ))}
-            {busy && <p className="empty">正在回答…</p>}
+            {pending && (
+              <>
+                <div className="message role-user">
+                  <MessageBody content={pending.question} />
+                </div>
+                <div className="message role-assistant">
+                  {pending.answer ? (
+                    <MessageBody content={pending.answer} />
+                  ) : (
+                    <p className="empty">正在回答…</p>
+                  )}
+                </div>
+              </>
+            )}
+            {busy && !pending && <p className="empty">正在回答…</p>}
           </div>
           <div className="composer">
             <textarea

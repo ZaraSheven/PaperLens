@@ -312,7 +312,7 @@ def main() -> int:
         status, payload = call(
             "POST",
             f"/api/documents/{doc_id}/messages",
-            {"content": "这篇讲了什么", "scope": "full"},
+            {"content": "这篇讲了什么"},
         )
         if status == 409:
             detail = payload.get("detail") if isinstance(payload, dict) else payload

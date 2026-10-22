@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 
 import { api } from '../api'
 import type { AppConfig, ConfigInput, ConfigResponse, ModelRouteConfig } from '../types'
@@ -87,6 +87,7 @@ function RouteFields({
   loading,
   onChange,
   onFetchModels,
+  footer,
 }: {
   kind: 'chat' | 'translate'
   title: string
@@ -97,6 +98,7 @@ function RouteFields({
   loading: boolean
   onChange: (next: FormRoute) => void
   onFetchModels: () => void
+  footer?: ReactNode
 }) {
   return (
     <section className="setup-section">
@@ -153,6 +155,7 @@ function RouteFields({
           </button>
         </div>
       </label>
+      {footer}
     </section>
   )
 }
@@ -165,6 +168,7 @@ export function Setup({ onSaved, onCancel }: Props) {
   const [saving, setSaving] = useState(false)
   const [noteTemplate, setNoteTemplate] = useState<string>(DEFAULT_NOTE_TEMPLATE)
   const [agentPrompt, setAgentPrompt] = useState<string>(DEFAULT_AGENT_PROMPT)
+  const [chatVision, setChatVision] = useState(true)
   const [notePreset, setNotePreset] = useState('standard')
   const [fetching, setFetching] = useState<'chat' | 'translate' | null>(null)
   const [models, setModels] = useState<Record<'chat' | 'translate', string[]>>({
@@ -188,6 +192,7 @@ export function Setup({ onSaved, onCancel }: Props) {
             'custom',
         )
         setAgentPrompt(result.config.agent_prompt || DEFAULT_AGENT_PROMPT)
+        setChatVision(result.config.chat_vision)
       })
       .catch((reason: unknown) => {
         if (!cancelled) setError(errorMessage(reason))
@@ -236,6 +241,7 @@ export function Setup({ onSaved, onCancel }: Props) {
       },
       note_template: noteTemplate.trim(),
       agent_prompt: agentPrompt.trim(),
+      chat_vision: chatVision,
     }
     try {
       onSaved(await api.saveConfig(payload))
@@ -281,6 +287,19 @@ export function Setup({ onSaved, onCancel }: Props) {
           loading={fetching === 'chat'}
           onChange={setChat}
           onFetchModels={() => void fetchModels('chat', chat)}
+          footer={
+            <label className="setup-check">
+              <input
+                type="checkbox"
+                checked={chatVision}
+                onChange={(event) => setChatVision(event.target.checked)}
+              />
+              <span>
+                这个模型支持看图：问图、公式、表格时会把它那一块的原图一起发过去。
+                不支持图片的模型请关掉，否则问图会报错。
+              </span>
+            </label>
+          }
         />
         <RouteFields
           kind="translate"

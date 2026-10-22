@@ -604,6 +604,21 @@ code {
   margin-top: 8px;
 }
 
+.setup-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.setup-check input {
+  margin: 3px 0 0;
+  accent-color: var(--accent);
+}
+
 .setup-actions {
   display: flex;
   align-items: center;
@@ -956,6 +971,14 @@ code {
   padding: 8px 10px;
   border-bottom: 1px solid var(--line);
   font-size: 13px;
+  /* 标题栏就是拖动手柄。 */
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.bubble-head:active {
+  cursor: grabbing;
 }
 
 .bubble-head .icon {
@@ -1035,6 +1058,74 @@ code {
   word-break: break-word;
 }
 
+/* 回答是 Markdown 渲染出来的，段落、列表、代码块的间距要自己给。 */
+.message-text > :first-child {
+  margin-top: 0;
+}
+
+.message-text > :last-child {
+  margin-bottom: 0;
+}
+
+.message-text p {
+  margin: 0 0 8px;
+}
+
+.message-text ul,
+.message-text ol {
+  margin: 0 0 8px;
+  padding-left: 20px;
+}
+
+.message-text li {
+  margin: 2px 0;
+}
+
+.message-text h1,
+.message-text h2,
+.message-text h3,
+.message-text h4 {
+  margin: 10px 0 6px;
+  font-size: 14px;
+}
+
+.message-text pre {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  overflow-x: auto;
+  white-space: pre;
+  background: var(--tint);
+  border-radius: 6px;
+}
+
+.message-text pre code {
+  padding: 0;
+  background: transparent;
+}
+
+.message-text table {
+  margin: 0 0 8px;
+  border-collapse: collapse;
+}
+
+.message-text th,
+.message-text td {
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+}
+
+/* 公式由 KaTeX 自己管间距和换行，别被外层的 pre-wrap 撑变形。 */
+.message-text .katex {
+  white-space: normal;
+  font-size: 1.02em;
+}
+
+.message-text .katex-display {
+  margin: 8px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
 .link-button {
   display: inline-flex;
   align-items: center;
@@ -1059,11 +1150,6 @@ code {
   gap: 8px;
   padding-top: 8px;
   background: var(--panel);
-}
-
-.scope {
-  display: flex;
-  gap: 4px;
 }
 
 .chip {

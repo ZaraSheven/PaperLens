@@ -17,6 +17,7 @@ from typing import Any
 
 import uvicorn
 from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
 
 app = FastAPI()
 
@@ -40,7 +41,11 @@ def models() -> dict[str, Any]:
 def chat(body: dict[str, Any]) -> dict[str, Any]:
     RECEIVED.append(body)
     messages = body.get("messages", [])
-    last = messages[-1]["content"] if messages else ""
+    last_content = messages[-1]["content"] if messages else ""
+    last = _text_of(last_content)
+    has_image = isinstance(last_content, list) and any(
+        isinstance(part, dict) and part.get("type") == "image_url" for part in last_content
+    )
     system = messages[0]["content"] if messages else ""
     if "论文信息抽取器" in system:
         content = json.dumps(
@@ -54,8 +59,15 @@ def chat(body: dict[str, Any]) -> dict[str, Any]:
         )
     elif "引用格式测试" in last:
         content = f"假回答：{last[:40]} [p1]"
+    elif has_image:
+        content = f"假回答（带图）：{last[:40]}"
     else:
         content = f"假回答：{last[:60]}"
+
+    if body.get("stream"):
+        return StreamingResponse(
+            _stream_chunks(content, body.get("model", "fake")), media_type="text/event-stream"
+        )
     return {
         "id": "chatcmpl-fake",
         "object": "chat.completion",
@@ -70,6 +82,34 @@ def chat(body: dict[str, Any]) -> dict[str, Any]:
         ],
         "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
     }
+
+
+def _stream_chunks(content: str, model: str):
+    """真的按块发，一次几个字，跟上游的流式一样，前端才能验证边收边显示。"""
+    for index in range(0, len(content), 3):
+        piece = content[index : index + 3]
+        payload = {
+            "id": "chatcmpl-fake",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": model,
+            "choices": [{"index": 0, "delta": {"content": piece}, "finish_reason": None}],
+        }
+        yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+    yield "data: [DONE]\n\n"
+
+
+def _text_of(content: Any) -> str:
+    """content 可能是纯文字，也可能是「文字 + 图片」的数组；这里只取文字部分。"""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    return " ".join(
+        str(part.get("text", ""))
+        for part in content
+        if isinstance(part, dict) and part.get("type") == "text"
+    )
 
 
 @app.post("/v1/embeddings")

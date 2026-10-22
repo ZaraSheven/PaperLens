@@ -18,6 +18,7 @@ _ENV_TO_FIELD = {
     "CHAT_BASE_URL": "chat_base_url",
     "CHAT_API_KEY": "chat_api_key",
     "CHAT_MODEL": "chat_model",
+    "CHAT_VISION": "chat_vision",
     "TRANSLATE_BASE_URL": "translate_base_url",
     "TRANSLATE_API_KEY": "translate_api_key",
     "TRANSLATE_MODEL": "translate_model",
@@ -34,6 +35,9 @@ class Settings(BaseSettings):
     chat_base_url: str = ""
     chat_api_key: str = ""
     chat_model: str = ""
+    # 对话模型能不能看图。开着的话，问图、公式、表格时会把它那一块的原图
+    # 一起发给模型；模型不支持图片时请求会直接报错，那就关掉。
+    chat_vision: bool = True
 
     translate_base_url: str = ""
     translate_api_key: str = ""
@@ -42,7 +46,6 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8756
     data_dir: str = "data"
-    skip_connection_test: bool = False
 
     @property
     def data_path(self) -> Path:
@@ -74,5 +77,11 @@ def save_settings(updates: dict[str, str]) -> None:
     ENV_FILE.touch(exist_ok=True)
     for key, value in updates.items():
         set_key(str(ENV_FILE), key, value, quote_mode="always")
-        setattr(settings, _ENV_TO_FIELD[key], value)
+        field = _ENV_TO_FIELD[key]
+        current = getattr(settings, field)
+        # 布尔字段要按布尔写回内存：直接塞字符串的话，"0" 也是真值。
+        if isinstance(current, bool):
+            setattr(settings, field, value.strip().lower() in {"1", "true", "yes", "on"})
+        else:
+            setattr(settings, field, value)
 

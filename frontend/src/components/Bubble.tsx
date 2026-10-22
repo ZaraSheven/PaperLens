@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 
 import { api } from '../api'
@@ -6,7 +6,7 @@ import { useQueriedElement, useTrackedRect } from '../hooks/useTrackedRect'
 import { drawCrop, previewRenderScale, renderPageSurface } from '../pdfCrop'
 import { placeBubble, toBox, type Placement } from '../placement'
 import { readAutoNote, writeAutoNote } from '../settings'
-import type { AskScope, Block, InlineSegment, Message, PageSize } from '../types'
+import type { Block, InlineSegment, Message, PageSize } from '../types'
 import { errorMessage } from '../util'
 import { MessageBody } from './MessageBody'
 
@@ -135,7 +135,6 @@ export function Bubble({
 }: Props) {
   const [tab, setTab] = useState<Tab>('translation')
   const [messages, setMessages] = useState<Message[]>([])
-  const [scope, setScope] = useState<AskScope>('full')
   const [draft, setDraft] = useState('')
   const [note, setNote] = useState(block.note ?? '')
   const [busy, setBusy] = useState(false)
@@ -144,9 +143,15 @@ export function Bubble({
   /** 笔记已经覆盖到第几条对话。用来判断关窗时要不要重新整理。 */
   const [notedCount, setNotedCount] = useState(0)
   const [placed, setPlaced] = useState<{ x: number; y: number; placement: Placement } | null>(null)
+  /** 用户拖过之后就用这个位置，不再跟着段落走。 */
+  const [manual, setManual] = useState<{ x: number; y: number } | null>(null)
+  /** 正在流式回答：问题先显示出来，答案一段段往里加。 */
+  const [pending, setPending] = useState<{ question: string; answer: string } | null>(null)
   const [surface, setSurface] = useState<HTMLCanvasElement | null>(null)
 
   const bubbleRef = useRef<HTMLDivElement>(null)
+  const messagesRef = useRef<HTMLDivElement>(null)
+  const dragRef = useRef<{ dx: number; dy: number } | null>(null)
   // 段落切换后，先前发出去的请求可能才回来。拿它判断结果还该不该往界面上写。
   const currentBlockId = useRef(block.id)
   currentBlockId.current = block.id
@@ -179,6 +184,8 @@ export function Bubble({
     setMessages([])
     setNote(block.note ?? '')
     setShowPreview(block.kind !== 'text')
+    setManual(null)
+    setPending(null)
     api
       .blockMessages(block.id)
       .then((list) => {
@@ -218,11 +225,18 @@ export function Bubble({
     return () => observer.disconnect()
   }, [anchorRect, blockRect, tab, messages.length, block.note, showPreview])
 
-  // 段落滚出视口后气泡自动收起，不留漂浮窗口。
+  // 段落滚出视口后气泡自动收起，不留漂浮窗口。用户主动拖开的那次除外：
+  // 拖到一边多半就是想留着它读别处。
   useEffect(() => {
-    if (!anchorRect) return
+    if (!anchorRect || manual) return
     if (anchorRect.bottom < 0 || anchorRect.top > window.innerHeight) onClose()
-  }, [anchorRect, onClose])
+  }, [anchorRect, onClose, manual])
+
+  /** 回答在长的时候要跟着滚到底，不然只能看到开头。 */
+  useEffect(() => {
+    const element = messagesRef.current
+    if (element) element.scrollTop = element.scrollHeight
+  }, [messages.length, pending?.answer, pending?.question])
 
   const generateNote = async (): Promise<Block> => {
     const next = await api.generateBlockNote(block.id)
@@ -277,18 +291,47 @@ export function Bubble({
 
   const translate = () => guard(async () => onUpdate(await api.translateBlock(block.id)))
 
-  const send = () =>
-    guard(async () => {
-      const content = draft.trim()
-      if (!content) return
-      const targetId = block.id
-      setDraft('')
-      const result = await api.askBlock(targetId, content, scope)
-      const list = await api.blockMessages(targetId)
-      if (currentBlockId.current !== targetId) return
-      setMessages(list)
-      if (result.block) onUpdate(result.block)
-    })
+  /** 提问：先把问题显示出来，答案边生成边显示，流完再拉一次完整记录。 */
+  const send = () => {
+    const content = draft.trim()
+    if (!content || busy) return
+    const targetId = block.id
+    setDraft('')
+    setBusy(true)
+    setPending({ question: content, answer: '' })
+    api
+      .askBlockStream(targetId, content, {
+        onDelta: (text) =>
+          setPending((current) =>
+            current ? { ...current, answer: current.answer + text } : current,
+          ),
+        onError: (message) => {
+          setPending(null)
+          onError(message)
+        },
+      })
+      .catch((reason: unknown) => {
+        setPending(null)
+        onError(errorMessage(reason))
+      })
+      .finally(async () => {
+        if (currentBlockId.current !== targetId) return
+        try {
+          const [list, updated] = await Promise.all([
+            api.blockMessages(targetId),
+            api.block(targetId),
+          ])
+          if (currentBlockId.current !== targetId) return
+          setMessages(list)
+          onUpdate(updated)
+        } catch (reason) {
+          onError(errorMessage(reason))
+        } finally {
+          setPending(null)
+          setBusy(false)
+        }
+      })
+  }
 
   const regenerateNote = () =>
     guard(async () => {
@@ -302,25 +345,67 @@ export function Bubble({
 
   const saveNote = () => guard(async () => onUpdate(await api.patchBlock(block.id, { note })))
 
+  /** 按住标题栏拖动气泡。拖过之后它就不再跟着段落走，方便边看别处边读答案。 */
+  const startDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    const target = event.target as HTMLElement
+    // 点在按钮、勾选框上时不拖，免得点不到它们。
+    if (target.closest('button, input, label, a')) return
+    const element = bubbleRef.current
+    if (!element) return
+    const rect = element.getBoundingClientRect()
+    dragRef.current = { dx: event.clientX - rect.left, dy: event.clientY - rect.top }
+    setManual({ x: rect.left, y: rect.top })
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+
+  const moveDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    const drag = dragRef.current
+    const element = bubbleRef.current
+    if (!drag || !element) return
+    // 至少留 48px 在屏幕里，免得拖到找不回来的地方。
+    const x = Math.min(
+      Math.max(event.clientX - drag.dx, 48 - element.offsetWidth),
+      window.innerWidth - 48,
+    )
+    const y = Math.min(Math.max(event.clientY - drag.dy, 0), window.innerHeight - 48)
+    setManual({ x, y })
+  }
+
+  const endDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    if (!dragRef.current) return
+    dragRef.current = null
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+  }
+
   return (
     <div
       ref={bubbleRef}
       className={[
         'bubble',
         `placement-${placed?.placement ?? 'right'}`,
+        manual ? 'is-dragged' : '',
         block.kind === 'text' ? '' : 'is-wide',
       ]
         .filter(Boolean)
         .join(' ')}
       style={{
-        left: placed?.x ?? 0,
-        top: placed?.y ?? 0,
-        visibility: placed ? 'visible' : 'hidden',
+        left: manual?.x ?? placed?.x ?? 0,
+        top: manual?.y ?? placed?.y ?? 0,
+        visibility: (manual ?? placed) ? 'visible' : 'hidden',
       }}
       role="dialog"
       aria-label="段落气泡"
     >
-      <header className="bubble-head">
+      <header
+        className="bubble-head"
+        title="按住标题栏可以拖动气泡"
+        onPointerDown={startDrag}
+        onPointerMove={moveDrag}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+      >
         <span className="bubble-page">第 {block.page + 1} 页</span>
         <span className="kind-chip">{KIND_LABEL[block.kind]}</span>
         {block.message_count > 0 && <span className="flag-chip">有疑问</span>}
@@ -415,35 +500,34 @@ export function Bubble({
 
         {tab === 'chat' && (
           <section className="pane chat">
-            <div className="messages">
+            <div className="messages" ref={messagesRef}>
               {messages.length === 0 && <p className="empty">还没有提问</p>}
               {messages.map((message) => (
                 <div key={message.id} className={`message role-${message.role}`}>
                   <MessageBody content={message.content} />
                 </div>
               ))}
-              {busy && <p className="empty">正在回答…</p>}
+              {/* 正在流式回答：问题先出现，答案一段段补上来。 */}
+              {pending && (
+                <>
+                  <div className="message role-user">
+                    <MessageBody content={pending.question} />
+                  </div>
+                  <div className="message role-assistant">
+                    {pending.answer ? (
+                      <MessageBody content={pending.answer} />
+                    ) : (
+                      <p className="empty">正在回答…</p>
+                    )}
+                  </div>
+                </>
+              )}
+              {busy && !pending && <p className="empty">正在回答…</p>}
             </div>
             <div className="composer">
-              <div className="scope">
-                <button
-                  type="button"
-                  className={scope === 'full' ? 'chip active' : 'chip'}
-                  onClick={() => setScope('full')}
-                >
-                  全文
-                </button>
-                <button
-                  type="button"
-                  className={scope === 'block' ? 'chip active' : 'chip'}
-                  onClick={() => setScope('block')}
-                >
-                  本段
-                </button>
-              </div>
               <textarea
                 value={draft}
-                placeholder="这段没看懂什么？"
+                placeholder="这段哪里没看懂？"
                 rows={2}
                 onChange={(event) => setDraft(event.target.value)}
                 onKeyDown={(event) => {

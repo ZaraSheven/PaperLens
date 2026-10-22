@@ -1,4 +1,3 @@
-export type AskScope = 'full' | 'block'
 /** text 是正文段落；formula、figure 和 table 的文字都抽不准，界面按原图显示。 */
 export type BlockKind = 'text' | 'formula' | 'figure' | 'table'
 
@@ -53,7 +52,8 @@ export interface Message {
   id: number
   doc_id: string
   block_id: string | null
-  scope: AskScope
+  /** 这问题是点着某一段问的（block），还是在整篇对话面板里问的（full）。 */
+  scope: string
   role: 'user' | 'assistant'
   content: string
   citations: Citation[]
@@ -93,6 +93,8 @@ export interface AppConfig {
   translate: ModelRouteConfig
   note_template: string
   agent_prompt: string
+  /** 对话模型能不能看图：开着的话问图会把那一块的原图一起发给模型。 */
+  chat_vision: boolean
 }
 
 export interface ConfigResponse {
@@ -111,6 +113,7 @@ export interface ConfigInput {
   translate: ModelRouteInput
   note_template?: string
   agent_prompt?: string
+  chat_vision?: boolean
 }
 
 export interface ModelListInput {

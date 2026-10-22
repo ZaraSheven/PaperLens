@@ -1067,3 +1067,31 @@ def extract_blocks(pdf_path: str, doc_id: str) -> tuple[list[dict[str, Any]], di
 
     meta = {"page_count": len(pages), "title": meta_title, "pages": pages}
     return blocks, meta
+
+
+# 交给能看图的模型时，原图最长边压在这个像素以内：再大模型也会自己缩小，白花流量。
+VISION_MAX_EDGE = 1400.0
+
+
+def render_block_png(
+    pdf_path: str, page_index: int, box: dict[str, Any], max_edge: float = VISION_MAX_EDGE
+) -> bytes:
+    """把页面上的一小块渲染成 PNG，用来连同问题一起交给能看图的对话模型。
+
+    坐标是归一化到 0..1 的，乘回页面尺寸就是裁剪框；公式和图表的文字本来就抽不准，
+    直接让模型看原图，比让它猜抽取结果靠谱得多。
+    """
+    with pymupdf.open(pdf_path) as document:
+        page = document[page_index]
+        rect = page.rect
+        clip = pymupdf.Rect(
+            rect.x0 + float(box["x0"]) * rect.width,
+            rect.y0 + float(box["y0"]) * rect.height,
+            rect.x0 + float(box["x1"]) * rect.width,
+            rect.y0 + float(box["y1"]) * rect.height,
+        ) & rect
+        if clip.is_empty:
+            raise ValueError("这一块没有可渲染的区域")
+        scale = min(3.0, max(0.5, max_edge / max(clip.width, clip.height)))
+        pixmap = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), clip=clip)
+    return pixmap.tobytes("png")

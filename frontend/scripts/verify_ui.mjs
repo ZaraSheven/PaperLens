@@ -451,13 +451,37 @@ await page.waitForTimeout(700)
 await page.locator(`[data-marker-block="${questionProbe.id}"]`).click()
 await page.waitForSelector('.bubble', { state: 'visible', timeout: 8000 })
 await page.locator('.bubble .bubble-tabs button:has-text("对话")').click()
-await page.locator('.bubble .composer textarea').fill('引用格式测试')
+// 问题里带一段 LaTeX：自己发的消息也要排成数学公式，顺带验证 KaTeX 真的接上了。
+await page.locator('.bubble .composer textarea').fill('引用格式测试 $Z = f \\cdot b / d$')
+// 把流往后压两秒，好确认「问题先显示、答案后到」这件事，不是靠模型快慢碰运气。
+await page.route('**/messages/stream', async (route) => {
+  await new Promise((resolve) => setTimeout(resolve, 2000))
+  await route.continue()
+})
 await page.locator('.bubble .composer button:has-text("提问")').click()
+await page.waitForSelector('.bubble .message.role-user', { timeout: 5000 })
+const pendingState = await page.evaluate(() => ({
+  question: document.querySelector('.bubble .message.role-user .message-text')?.textContent ?? '',
+  answered: Boolean(document.querySelector('.bubble .message.role-assistant .message-text')),
+  waiting: Boolean(document.querySelector('.bubble .message.role-assistant .empty')),
+}))
+check(
+  '点提问后问题先显示出来',
+  pendingState.question.includes('引用格式测试'),
+  JSON.stringify(pendingState),
+)
+check(
+  '这时候回答还没到，气泡里显示正在回答',
+  pendingState.answered === false && pendingState.waiting === true,
+  JSON.stringify(pendingState),
+)
 // 这一步真的会调用对话模型。接假模型时是秒回，接真实厂商时一分钟以上也正常。
 await page.waitForSelector('.bubble .message.role-assistant .message-text', { timeout: 180000 })
 const questionState = await page.evaluate((id) => ({
   answer: document.querySelector('.bubble .message.role-assistant .message-text')?.textContent ?? '',
   citationNodes: document.querySelectorAll('.bubble .citation').length,
+  renderedMath: document.querySelectorAll('.bubble .message.role-user .katex').length,
+  rawDollars: (document.querySelector('.bubble .message.role-user .message-text')?.textContent ?? '').includes('$'),
   questioned: document.querySelector(`[data-block="${id}"]`)?.classList.contains('is-questioned'),
   flagged: document
     .querySelector(`[data-marker-block="${id}"]`)
@@ -465,6 +489,11 @@ const questionState = await page.evaluate((id) => ({
 }), questionProbe.id)
 check('提问后段落有疑问底色', questionState.questioned === true, JSON.stringify(questionState))
 check('提问后页边留下疑问标记', questionState.flagged === true, JSON.stringify(questionState))
+check(
+  '消息里的 LaTeX 排成了数学公式',
+  questionState.renderedMath > 0 && questionState.rawDollars === false,
+  JSON.stringify({ math: questionState.renderedMath, raw: questionState.rawDollars }),
+)
 check(
   '回答里不再显示引用标记',
   questionState.citationNodes === 0 &&
@@ -534,6 +563,17 @@ const bubble = await page.evaluate(() => ({
 }))
 check('气泡显示出来了', bubble.visibility === 'visible', JSON.stringify(bubble))
 check('气泡标出这是公式', bubble.kind === '公式', JSON.stringify(bubble))
+
+// 提问不再让用户挑「全文 / 本段」：整篇找依据，同时一定带上你点的那一段。
+await page.locator('.bubble .bubble-tabs button:has-text("对话")').click()
+const composerState = await page.evaluate(() => ({
+  scopeChips: document.querySelectorAll('.bubble .scope').length,
+  textarea: Boolean(document.querySelector('.bubble .composer textarea')),
+}))
+check('对话里不再有全文 / 本段开关', composerState.scopeChips === 0, JSON.stringify(composerState))
+check('对话输入框还在', composerState.textarea === true, JSON.stringify(composerState))
+// 看回翻译页，后面的截图还是原来的样子。
+await page.locator('.bubble .bubble-tabs button:has-text("翻译")').click()
 check('公式默认显示原图', bubble.hasPreview, JSON.stringify(bubble))
 
 const preview = await page.evaluate(() => {
@@ -549,6 +589,30 @@ const preview = await page.evaluate(() => {
 })
 check('原图确实画出了内容而不是空白', Boolean(preview) && preview.ink > 50, JSON.stringify(preview))
 await page.screenshot({ path: join(OUT, '3-formula-bubble.png') })
+
+console.log('\n气泡拖动')
+// 从标题栏上的「第 N 页」那块空白拖，避开勾选框和关闭按钮。
+const dragHandle = await page.locator('.bubble .bubble-page').boundingBox()
+const bubbleBefore = await page.locator('.bubble').boundingBox()
+const grabX = dragHandle.x + dragHandle.width / 2
+const grabY = dragHandle.y + dragHandle.height / 2
+await page.mouse.move(grabX, grabY)
+await page.mouse.down()
+await page.mouse.move(grabX + 120, grabY + 60, { steps: 10 })
+await page.mouse.up()
+await page.waitForTimeout(200)
+const bubbleAfter = await page.locator('.bubble').boundingBox()
+const draggedClass = await page.evaluate(() =>
+  document.querySelector('.bubble')?.classList.contains('is-dragged'),
+)
+check(
+  '按住标题栏能把气泡拖走',
+  Math.abs(bubbleAfter.x - bubbleBefore.x - 120) < 8 &&
+    Math.abs(bubbleAfter.y - bubbleBefore.y - 60) < 8,
+  JSON.stringify({ before: bubbleBefore, after: bubbleAfter }),
+)
+check('拖过的气泡会记住自己的位置', draggedClass === true, String(draggedClass))
+await page.screenshot({ path: join(OUT, '3b-bubble-dragged.png') })
 
 console.log('\n行内公式')
 await page.keyboard.press('Escape')

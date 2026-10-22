@@ -11,8 +11,11 @@ import os
 import shutil
 import sys
 import tempfile
+import json
 from pathlib import Path
 from typing import Any
+
+from fastapi.testclient import TestClient
 
 TESTS_DIR = Path(__file__).resolve().parent
 ROOT = TESTS_DIR.parents[1]
@@ -29,7 +32,6 @@ os.environ.update(
     {
         "DATA_DIR": WORK_DIR,
         "PAPER_READER_ENV_FILE": str(CONFIG_FILE),
-        "SKIP_CONNECTION_TEST": "0",
         "CHAT_BASE_URL": "http://127.0.0.1:8901/v1",
         "CHAT_API_KEY": "fake-key",
         "CHAT_MODEL": "fake-chat",
@@ -60,6 +62,18 @@ def chat_calls() -> list[dict[str, Any]]:
     return [record for record in fake_llm.RECEIVED if "messages" in record]
 
 
+def last_message_content() -> Any:
+    """最近一次对话请求里最后一条消息的 content：可能是纯文字，也可能是「文字 + 图片」数组。"""
+    return chat_calls()[0]["messages"][-1]["content"]
+
+
+def has_image_part() -> bool:
+    content = last_message_content()
+    return isinstance(content, list) and any(
+        isinstance(part, dict) and part.get("type") == "image_url" for part in content
+    )
+
+
 def main_() -> int:
     fake_llm.start(8901)
 
@@ -68,6 +82,8 @@ def main_() -> int:
         return 1
 
     db.init_db()
+    # 应用上传 PDF 时会把它落在 data 目录里；问图要从那里裁原图，这里照着摆一份。
+    shutil.copy(SAMPLE, llm.settings.data_path / f"{DOC_ID}.pdf")
     config = main.put_config(
         main.ConfigRequest(
             chat=main.ModelRoute(
@@ -82,9 +98,11 @@ def main_() -> int:
             ),
             note_template="自定义模板：\n{原文}\n{dialogue}".replace("{dialogue}", "{问答}"),
             agent_prompt="回答时先给结论，再给三条关键依据。",
+            chat_vision=True,
         )
     )
     check("配置接口能保存模型设置", CONFIG_FILE.exists(), str(CONFIG_FILE))
+    check("看图开关进了配置接口", config["config"]["chat_vision"] is True, str(config["config"]))
     check("保存后健康检查显示模型已配置", all(config["health"].values()), str(config["health"]))
     model_list = main.get_model_list(
         main.ModelListRequest(kind="chat", base_url="http://127.0.0.1:8901/v1")
@@ -127,9 +145,9 @@ def main_() -> int:
         db.get_block(target["id"])["translation"] == translated["translation"],
     )
 
-    print("\n全文问答")
+    print("\n问答：整篇找依据 + 锚点那一段")
     fake_llm.RECEIVED.clear()
-    answer = main.ask_about_block(target["id"], main.AskRequest(content=QUESTION, scope="full"))
+    answer = main.ask_about_block(target["id"], main.AskRequest(content=QUESTION))
     check("返回了回答", bool(answer["message"]["content"]), str(answer["message"])[:60])
     check("回答落库成了 assistant 消息", answer["message"]["role"] == "assistant")
     check("带回了引用", len(answer["citations"]) > 0, str(len(answer["citations"])))
@@ -179,13 +197,114 @@ def main_() -> int:
     check("详情包含方法列表", bool(overview["overview"]["methods"]), str(overview["overview"]))
     check("详情包含自己的问答", len(overview["questions"]) > 0, str(len(overview["questions"])))
 
-    print("\n本段问答")
+    print("\n同一段的追问")
     fake_llm.RECEIVED.clear()
-    second = main.ask_about_block(target["id"], main.AskRequest(content="这段的公式在说什么", scope="block"))
-    check("本段模式也能回答", bool(second["message"]["content"]))
-    check("本段模式不走向量检索", not any("input" in record for record in fake_llm.RECEIVED))
-    check("本段模式只调一次对话模型", len(chat_calls()) == 1, str(len(chat_calls())))
+    second = main.ask_about_block(target["id"], main.AskRequest(content="这段的公式在说什么"))
+    check("再问一次也能回答", bool(second["message"]["content"]))
+    check("问答不走向量检索", not any("input" in record for record in fake_llm.RECEIVED))
+    check("一次提问只调一次对话模型", len(chat_calls()) == 1, str(len(chat_calls())))
     check("对话累计到四条", len(db.get_messages(DOC_ID, target["id"])) == 4)
+
+    print("\n问图和公式")
+    # 样张里没有图块，手工放一块空文字的图进库——这正是用户点开图提问的情形：
+    # 图里一个字都抽不到，以前会被当成空段落丢掉，模型只能回答「原文没有提及」。
+    figure = {
+        "id": "figure0000000000001",
+        "doc_id": DOC_ID,
+        "page": 0,
+        "order_index": max(b["order_index"] for b in blocks) + 1,
+        "kind": "figure",
+        "x0": 0.1,
+        "y0": 0.1,
+        "x1": 0.5,
+        "y1": 0.5,
+        "text": "",
+        "segments": [],
+    }
+    db.save_blocks(DOC_ID, [{"doc_id": DOC_ID, **b} for b in blocks] + [figure])
+    check("空文字的图块能落库", db.get_block(figure["id"])["kind"] == "figure")
+
+    fake_llm.RECEIVED.clear()
+    asked_figure = main.ask_about_block(
+        figure["id"], main.AskRequest(content="这幅图讲了什么")
+    )
+    figure_system = "\n".join(
+        item["content"] for item in chat_calls()[0]["messages"] if item["role"] == "system"
+    )
+    check("图块也能拿到回答", bool(asked_figure["message"]["content"]))
+    check("问图时把那一块的原图一起发给了模型", has_image_part(), str(last_message_content())[:120])
+    check("上下文中标出了这是一张图", "· 图)" in figure_system, figure_system[:240])
+    check(
+        "上下文中说明图里没抽出文字",
+        "图里的文字没有抽出来" in figure_system,
+        figure_system[:240],
+    )
+    check(
+        "系统提示要求不要凭空描述图里画了什么",
+        "不要凭空描述图里画了什么" in figure_system,
+        figure_system[:240],
+    )
+
+    # 模型不支持图片时用户可以关掉这个开关，关掉之后就不该再发图。
+    llm.settings.chat_vision = False
+    try:
+        fake_llm.RECEIVED.clear()
+        main.ask_about_block(figure["id"], main.AskRequest(content="再解释一次"))
+        check("关掉看图开关后不再发原图", not has_image_part(), str(last_message_content())[:120])
+    finally:
+        llm.settings.chat_vision = True
+
+    # 整篇对话面板里没有锚点，就纯靠关键词检索；这类问题不该被算成「点着某一段问的」。
+    fake_llm.RECEIVED.clear()
+    main.ask_about_document(DOC_ID, main.AskRequest(content="这篇的贡献是什么"))
+    doc_system = "\n".join(
+        item["content"] for item in chat_calls()[0]["messages"] if item["role"] == "system"
+    )
+    check("整篇提问拿得到原文片段", "原文片段" in doc_system, doc_system[:240])
+    check(
+        "整篇提问不带图块这类锚点说明",
+        "· 图)" not in doc_system,
+        doc_system[:240],
+    )
+    doc_messages = db.get_messages(DOC_ID, None)
+    check(
+        "整篇提问记成 full",
+        all(message["scope"] == "full" for message in doc_messages),
+        str([message["scope"] for message in doc_messages]),
+    )
+
+    print("\n流式问答")
+    with TestClient(main.app) as client:
+        with client.stream(
+            "POST",
+            f"/api/blocks/{figure['id']}/messages/stream",
+            json={"content": "流式问一次"},
+        ) as response:
+            check("流式接口返回 200", response.status_code == 200, str(response.status_code))
+            check(
+                "返回的是事件流",
+                response.headers.get("content-type", "").startswith("text/event-stream"),
+                response.headers.get("content-type", ""),
+            )
+            lines = [line for line in response.iter_lines() if line.startswith("data: ")]
+    events = [json.loads(line[6:]) for line in lines]
+    check(
+        "回答分成多段推过来",
+        sum(1 for event in events if event["type"] == "delta") >= 2,
+        str(events[:3]),
+    )
+    check("最后一条事件是完成", events[-1]["type"] == "done", str(events[-1]))
+    streamed = db.get_messages(DOC_ID, figure["id"])[-2:]
+    check(
+        "问题在流式回答之前就落了库",
+        streamed[0]["role"] == "user" and streamed[0]["content"] == "流式问一次",
+        str(streamed[0]),
+    )
+    check(
+        "流式回答整条落了库",
+        streamed[1]["role"] == "assistant" and bool(streamed[1]["content"]),
+        str(streamed[1])[:80],
+    )
 
     print("\n整理笔记")
     noted = main.generate_block_note(target["id"])

@@ -1,3 +1,9 @@
+import Markdown from 'react-markdown'
+import rehypeKatex from 'rehype-katex'
+import remarkMath from 'remark-math'
+
+import 'katex/dist/katex.min.css'
+
 interface Props {
   content: string
 }
@@ -9,12 +15,24 @@ interface Props {
  */
 const CITATION_TOKEN = /\[\s*p\s*\d{1,3}\s*\]|\[\s*\d{1,2}\s*\]/gi
 
-/** 回答只渲染正文，引用标记不显示。 */
+/**
+ * 回答按 Markdown 渲染，公式交给 KaTeX 排版。
+ *
+ * 模型输出的是 `$Z = f \cdot b / d$` 这种 LaTeX，纯文本摆出来根本没法看，
+ * 排成数学公式才读得懂。HTML 默认不解析，模型写什么都不会变成页面结构。
+ */
 export function MessageBody({ content }: Props) {
   const text = content
     .replace(CITATION_TOKEN, '')
     .replace(/[ \t]{2,}/g, ' ')
     .replace(/\s+([，。！？；：,.!?;:])/g, '$1')
     .trim()
-  return <div className="message-text">{text}</div>
+
+  return (
+    <div className="message-text">
+      <Markdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+        {text}
+      </Markdown>
+    </div>
+  )
 }

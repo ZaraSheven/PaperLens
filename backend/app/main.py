@@ -5,11 +5,12 @@ import hashlib
 import json
 import mimetypes
 import re
-from typing import Any
+from typing import Any, Iterator
 
+import openai
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
@@ -61,6 +62,15 @@ def _config_error(_request: Request, exc: llm.ConfigError) -> JSONResponse:
     return JSONResponse(status_code=409, content={"detail": str(exc)})
 
 
+@app.exception_handler(openai.OpenAIError)
+def _model_error(_request: Request, exc: openai.OpenAIError) -> JSONResponse:
+    """上游模型自己报错时（没有可用通道、额度用尽、模型名写错）把原话转给前端。
+
+    不接这个异常的话，界面只会显示一个 500，用户根本不知道是模型服务的问题。
+    """
+    return JSONResponse(status_code=502, content={"detail": f"模型服务出错：{exc}"})
+
+
 @app.exception_handler(ValueError)
 def _value_error(_request: Request, exc: ValueError) -> JSONResponse:
     return JSONResponse(status_code=400, content={"detail": str(exc)})
@@ -82,7 +92,6 @@ class BlockPatch(BaseModel):
 
 class AskRequest(BaseModel):
     content: str = Field(min_length=1, max_length=8000)
-    scope: str = Field(default="full", pattern="^(full|block)$")
 
     @field_validator("content")
     @classmethod
@@ -108,6 +117,7 @@ class ConfigRequest(BaseModel):
     translate: ModelRoute = Field(default_factory=ModelRoute)
     note_template: str | None = Field(default=None, max_length=20000)
     agent_prompt: str | None = Field(default=None, max_length=20000)
+    chat_vision: bool | None = None
 
 
 class DocumentPatch(BaseModel):
@@ -181,6 +191,7 @@ def _config_view() -> dict[str, Any]:
         },
         "note_template": db.get_setting("note_template", ""),
         "agent_prompt": _read_agent_prompt(),
+        "chat_vision": settings.chat_vision,
     }
 
 
@@ -223,23 +234,18 @@ def put_config(body: ConfigRequest) -> dict[str, Any]:
         if not all(route):
             raise ValueError(f"{label}的 base_url / api_key / model 三项都必填")
 
-    if not settings.skip_connection_test:
-        try:
-            llm.test_chat_route(*chat)
-            llm.test_chat_route(*translate)
-        except Exception as exc:
-            raise ValueError(f"模型连接测试失败：{exc}") from exc
-
-    save_settings(
-        {
-            "CHAT_BASE_URL": chat[0],
-            "CHAT_API_KEY": chat[1],
-            "CHAT_MODEL": chat[2],
-            "TRANSLATE_BASE_URL": translate[0],
-            "TRANSLATE_API_KEY": translate[1],
-            "TRANSLATE_MODEL": translate[2],
-        }
-    )
+    updates = {
+        "CHAT_BASE_URL": chat[0],
+        "CHAT_API_KEY": chat[1],
+        "CHAT_MODEL": chat[2],
+        "TRANSLATE_BASE_URL": translate[0],
+        "TRANSLATE_API_KEY": translate[1],
+        "TRANSLATE_MODEL": translate[2],
+    }
+    # 没带这个开关的老客户端不要顺手把它改成「开」。
+    if body.chat_vision is not None:
+        updates["CHAT_VISION"] = "1" if body.chat_vision else "0"
+    save_settings(updates)
     if body.note_template is not None:
         db.set_setting("note_template", body.note_template.strip())
     if body.agent_prompt is not None:
@@ -477,6 +483,14 @@ def patch_block(block_id: str, patch: BlockPatch) -> dict[str, Any]:
     return block
 
 
+@app.get("/api/blocks/{block_id}")
+def get_block(block_id: str) -> dict[str, Any]:
+    block = db.get_block(block_id)
+    if not block:
+        raise HTTPException(status_code=404, detail="段落不存在")
+    return block
+
+
 @app.post("/api/blocks/{block_id}/translate")
 def translate_block(block_id: str) -> dict[str, Any]:
     block = db.get_block(block_id)
@@ -506,10 +520,11 @@ def ask_about_block(block_id: str, body: AskRequest) -> dict[str, Any]:
     question = body.content
     # 先拿答案再落库：模型没配好或调用失败时，不会在历史里留下一句没有回答的提问。
     # 顺序也保证模型看到的历史里不含当前这个问题，否则同一个问题会被送进去两次。
-    result = rag.ask(doc_id, question, block_id=block_id, scope=body.scope)
-    db.add_message(doc_id, block_id, body.scope, "user", question)
+    result = rag.ask(doc_id, question, block_id=block_id)
+    # scope 只是「这问题是从哪问的」：block = 点着某一段问的，full = 整篇对话里问的。
+    db.add_message(doc_id, block_id, "block", "user", question)
     answer = db.add_message(
-        doc_id, block_id, body.scope, "assistant", result["answer"], result["citations"]
+        doc_id, block_id, "block", "assistant", result["answer"], result["citations"]
     )
     return {"message": answer, "citations": result["citations"], "block": db.get_block(block_id)}
 
@@ -520,6 +535,68 @@ def clear_block_messages(block_id: str) -> None:
     if not block:
         raise HTTPException(status_code=404, detail="段落不存在")
     db.clear_messages(block["doc_id"], block_id)
+
+
+def _sse(payload: dict[str, Any]) -> str:
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _stream_answer(
+    doc_id: str,
+    block_id: str | None,
+    question: str,
+    scope: str,
+    prepared: dict[str, Any],
+) -> Iterator[str]:
+    """一段段把答案推给界面，等流完再把整条回答落库。
+
+    问题是在进这个函数之前就存好的，所以界面一点「提问」就能看到自己问了什么，
+    不用等模型开完口。
+    """
+    chunks: list[str] = []
+    try:
+        for piece in llm.answer_with_context_stream(
+            question, prepared["context"], prepared["history"], prepared["image"]
+        ):
+            chunks.append(piece)
+            yield _sse({"type": "delta", "text": piece})
+    except Exception as exc:
+        # 响应头早发出去了，改不了状态码，只能把错误当成一个事件告诉前端。
+        yield _sse({"type": "error", "message": str(exc)})
+        return
+    message = db.add_message(
+        doc_id, block_id, scope, "assistant", "".join(chunks), prepared["citations"]
+    )
+    yield _sse({"type": "done", "id": message["id"]})
+
+
+@app.post("/api/blocks/{block_id}/messages/stream")
+def ask_about_block_stream(block_id: str, body: AskRequest) -> StreamingResponse:
+    block = db.get_block(block_id)
+    if not block:
+        raise HTTPException(status_code=404, detail="段落不存在")
+    doc_id = block["doc_id"]
+    # 顺序和同步版本一致：先取好上下文（历史里不含当前这个问题），再落库问题。
+    prepared = rag.prepare(doc_id, body.content, block_id=block_id)
+    db.add_message(doc_id, block_id, "block", "user", body.content)
+    return StreamingResponse(
+        _stream_answer(doc_id, block_id, body.content, "block", prepared),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.post("/api/documents/{doc_id}/messages/stream")
+def ask_about_document_stream(doc_id: str, body: AskRequest) -> StreamingResponse:
+    if not db.get_document(doc_id):
+        raise HTTPException(status_code=404, detail="文献不存在")
+    prepared = rag.prepare(doc_id, body.content, block_id=None)
+    db.add_message(doc_id, None, "full", "user", body.content)
+    return StreamingResponse(
+        _stream_answer(doc_id, None, body.content, "full", prepared),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.post("/api/blocks/{block_id}/note")
@@ -543,10 +620,10 @@ def ask_about_document(doc_id: str, body: AskRequest) -> dict[str, Any]:
     if not db.get_document(doc_id):
         raise HTTPException(status_code=404, detail="文献不存在")
     question = body.content
-    result = rag.ask(doc_id, question, block_id=None, scope="full")
-    db.add_message(doc_id, None, body.scope, "user", question)
+    result = rag.ask(doc_id, question, block_id=None)
+    db.add_message(doc_id, None, "full", "user", question)
     answer = db.add_message(
-        doc_id, None, body.scope, "assistant", result["answer"], result["citations"]
+        doc_id, None, "full", "assistant", result["answer"], result["citations"]
     )
     return {"message": answer, "citations": result["citations"]}
 

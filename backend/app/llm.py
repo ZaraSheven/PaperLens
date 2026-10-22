@@ -1,7 +1,9 @@
 """模型调用层。上游全部按 OpenAI 兼容接口访问。"""
 from __future__ import annotations
 
+import base64
 import json
+from collections.abc import Iterator
 from typing import Any
 
 from openai import OpenAI
@@ -31,16 +33,6 @@ def _client(base_url: str, api_key: str, label: str) -> OpenAI:
     return OpenAI(base_url=base_url, api_key=api_key, timeout=180.0, max_retries=2)
 
 
-def test_chat_route(base_url: str, api_key: str, model: str) -> None:
-    """配置页保存前做一次最小对话请求。"""
-    client = OpenAI(base_url=base_url, api_key=api_key, timeout=20.0, max_retries=0)
-    client.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": "ping"}],
-        max_tokens=1,
-    )
-
-
 def list_models(base_url: str, api_key: str) -> list[str]:
     """读取 OpenAI 兼容服务的模型列表。"""
     client = OpenAI(base_url=base_url, api_key=api_key, timeout=20.0, max_retries=0)
@@ -63,7 +55,7 @@ def _with_agent_profile(system: str) -> str:
 
 
 def chat(
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],
     *,
     model: str | None = None,
     base_url: str | None = None,
@@ -98,23 +90,83 @@ def translate(text: str, target_language: str = "简体中文") -> str:
     )
 
 
+def _answer_messages(
+    question: str,
+    context: str,
+    history: list[dict[str, Any]] | None,
+    image: bytes | None,
+) -> list[dict[str, Any]]:
+    """问答要发给模型的消息。同步和流式走同一套，免得两边提示词走偏。"""
+    system = (
+        "你是 PaperLens。用户点着论文里的某一段提问，要解释的就是那一段。"
+        "下面编号的片段来自整篇论文，最前面的几条就是用户点的那一段和它前后的内容。"
+        "每个片段开头都写明它在第几页、属于正文 / 公式 / 图 / 表格。"
+        "公式、图和表格在界面上显示的是页面原图，片段里的文字是从那一块抽出来的，可能残缺甚至为空。"
+        "随问题一起发来的那张图就是用户点的那一块的原图："
+        "直接把图里的结构、标签、坐标轴、符号读出来，结合片段里的正文解释它在讲什么。"
+        "没有附带原图时不要凭空描述图里画了什么，说明哪一部分需要看原图即可。"
+        "用户问的正是一段公式、一张图或一张表格时，不要回答「原文没有提及」。"
+        "数学公式一律写成 LaTeX，行内用 $...$，独立成行的用 $$...$$，不要用纯文本拼公式。"
+        "回答要直接给结论和依据，不要输出引用编号、页码标记或来源角标。"
+        "其余问题按原文回答，原文确实没提到的，就回答原文没有提及。\n\n"
+        f"编号原文片段：\n{context}"
+    )
+    system = _with_agent_profile(system)
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
+    for item in (history or [])[-8:]:
+        messages.append({"role": item["role"], "content": item["content"]})
+    if image is None:
+        messages.append({"role": "user", "content": question})
+    else:
+        messages.append(
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": question},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "data:image/png;base64,"
+                            + base64.b64encode(image).decode("ascii")
+                        },
+                    },
+                ],
+            }
+        )
+    return messages
+
+
 def answer_with_context(
     question: str,
     context: str,
     history: list[dict[str, Any]] | None = None,
+    image: bytes | None = None,
 ) -> str:
-    system = (
-        "你是 PaperLens。只依据下面编号的原文片段回答问题。"
-        "回答要直接给结论和依据，不要输出引用编号、页码标记或来源角标。"
-        "原文没有提到的内容，直接回答原文没有提及。\n\n"
-        f"编号原文片段：\n{context}"
+    return chat(_answer_messages(question, context, history, image))
+
+
+def answer_with_context_stream(
+    question: str,
+    context: str,
+    history: list[dict[str, Any]] | None = None,
+    image: bytes | None = None,
+) -> Iterator[str]:
+    """一段一段地吐答案，界面边收边显示，不用等整段生成完。"""
+    model = settings.chat_model
+    if not model:
+        raise ConfigError("未配置 CHAT_MODEL")
+    stream = _client(settings.chat_base_url, settings.chat_api_key, "对话模型").chat.completions.create(
+        model=model,
+        messages=_answer_messages(question, context, history, image),  # type: ignore[arg-type]
+        temperature=0.2,
+        stream=True,
     )
-    system = _with_agent_profile(system)
-    messages: list[dict[str, str]] = [{"role": "system", "content": system}]
-    for item in (history or [])[-8:]:
-        messages.append({"role": item["role"], "content": item["content"]})
-    messages.append({"role": "user", "content": question})
-    return chat(messages)
+    for chunk in stream:
+        if not chunk.choices:
+            continue
+        piece = chunk.choices[0].delta.content
+        if piece:
+            yield piece
 
 
 def summarize_reading(text: str, dialogue: str, template: str = "") -> str:
