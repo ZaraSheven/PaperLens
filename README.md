@@ -1,5 +1,37 @@
 # PaperLens
 
+![阅读界面](docs/screenshots/reader.png)
+
+## 界面效果
+
+| 文献库 | 论文详情 |
+|---|---|
+| ![文献库](docs/screenshots/library.png) | ![论文详情](docs/screenshots/document-details.png) |
+
+| 公式原图 | 表格原图 |
+|---|---|
+| ![公式气泡](docs/screenshots/formula-bubble.png) | ![表格气泡](docs/screenshots/table-bubble.png) |
+
+连续多选：
+
+![连续多选](docs/screenshots/multi-select.png)
+
+## 换肤效果
+
+皮肤是「一张壁纸 + 一组玻璃参数」：工具栏、卡片、气泡浮在图上，PDF 仍是白纸。
+下面四张分别是墨蓝夜航、暖粉梦境、紫罗兰夜、琥珀黄昏；最后一张是换肤抽屉，
+可以挑内置皮肤、上传自己的图、单独换主色，并调玻璃模糊与面板不透明度。
+
+| 墨蓝夜航 | 暖粉梦境 |
+|---|---|
+| ![墨蓝夜航](docs/screenshots/skin-ink-night.png) | ![暖粉梦境](docs/screenshots/skin-rose-dream.png) |
+
+| 紫罗兰夜 | 琥珀黄昏 |
+|---|---|
+| ![紫罗兰夜](docs/screenshots/skin-violet-night.png) | ![琥珀黄昏](docs/screenshots/skin-amber-dusk.png) |
+
+![换肤抽屉](docs/screenshots/skin-drawer.png)
+
 ## 这个项目能做什么
 把一份 PDF 论文放进来，它会按段落切开，公式和图表单独识别。点论文里的任意一段，
 旁边就会弹出一个气泡：
